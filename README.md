@@ -1,1 +1,1 @@
-# Building-Cloud-Native-Applucations-with-OpenShift
+# Building-Cloud-Native-Applications-with-OpenShift
