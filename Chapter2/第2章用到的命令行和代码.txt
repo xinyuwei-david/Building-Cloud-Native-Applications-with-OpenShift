@@ -1,0 +1,165 @@
+2.2 从源代码构建软件
+在正式开始验证之前，我们需要在Linux中安装编译工具。
+# yum install gcc rpm-build rpm-devel rpmlint make python bash coreutils diffutils
+
+
+2.2.1 本机编译代码
+在编程语言中，C语言是本机编译。我们查看一个源代码文件，如下所示：
+# cat cello.c
+#include <stdio.h>
+int main(void) {
+    printf("Hello World, I'm DavidWei!\n");
+    return 0;
+}
+
+
+调用C编译器gcc进行编译：
+# gcc -o cello cello.c
+
+编译成功后，我们可以执行结果输出。
+# ./cello
+Hello World, I'm DavidWei!
+
+为了实现自动化构建代码，我们添加Makefile，这是大型软件开发中常用的方法。
+首先创建一个Makefile，如下所示：
+# cat Makefile
+cello:
+              gcc -o cello cello.c
+clean:
+               rm cello
+
+
+
+2.2.2 解释型代码
+我们查看一个python的源代码，如下所示。
+# cat pello.py
+#!/usr/bin/env python
+print("Hello World, I'm DavidWei!")
+
+对源代码进行编译：
+# python -m compileall pello.py
+Compiling pello.py ...
+
+编译成功后运行：
+# python pello.pyc
+Hello World, I'm DavidWei!
+
+我们看到，对源.py文件进行字节编译后会生成一个.pyc文件，这是Python 2.7字节编译的文件类型，这个文件可以使用Python语言虚拟机运行。
+
+查看文件类型：
+# file pello.pyc
+pello.pyc: python 2.7 byte-compiled
+
+和Python相对应，无须编译的解释性代码是Raw Interpreted，如我们日常使用的bash shell。
+我们看一个shell文件，如下所示。
+# cat bello
+#!/bin/bash
+printf "Hello World, I'm DavidWei!\n"
+
+
+2.3 给软件打补丁
+将两个源码的不同之处保存到cello-output-first-patch.patch中。
+# diff -Naur cello.c.orig cello.c > cello-output-first-patch.patch
+
+
+2.6.2 书写SPEC文件
+由于三个SPEC修改的思路类似，因此只以bello为例介绍SPEC修改步骤。
+
+生成的bello.spec文件内容如下所示。
+# cat bello.spec
+Name:           bello
+Version:
+Release:        1%{?dist}
+Summary:
+
+License:
+URL:
+Source0:
+
+BuildRequires:
+Requires:
+
+%description
+
+
+%prep
+%setup -q
+
+
+%build
+%configure
+make %{?_smp_mflags}
+
+
+%install
+rm -rf $RPM_BUILD_ROOT
+%make_install
+
+
+%files
+%doc
+
+
+
+%changelog
+
+
+修改后的bello.spec内容如下所示。
+ [root@rpmlab-d710 ~]# cat ~/rpmbuild/SPECS/bello.spec
+Name:           bello
+Version:        0.1
+Release:        1%{?dist}
+Summary:        Hello World example implemented in bash script
+
+License:       GPLv3+
+URL:           https://www.example.com/%{name}
+Source0:       https://www.example.com/%{name}/releases/%{name}-%{version}.tar.gz
+
+Requires:      bash
+
+BuildArch:     noarch
+
+%description
+The long-tail description for our Hello World Example implemented in
+bash script of DavidWei.
+
+%prep
+%setup -q
+
+
+%build
+
+
+%install
+
+mkdir -p %{buildroot}%{_bindir}
+
+install -m 0755 %{name} %{buildroot}%{_bindir}/%{name}
+
+%files
+%license LICENSE
+%{_bindir}/%{name}
+
+
+%changelog
+* Tue Jun 29 2019 DavidWei - 0.1-1
+- First bello package
+- Example second item in the changelog for version-release 0.1-1
+在修改完SEPC后，我们就可以根据源代码和SPEC文件构建软件包了。
+
+
+2.7.1 构建Source RPM和二进制RPM
+首先，我们基于SRPM生成二进制RPM。执行过程如下所示。
+# rpmbuild --rebuild ~/rpmbuild/SRPMS/bello-0.1-1.el7.src.rpm
+
+
+2.7.2 检查并安装RPM包
+Rpmlint命令可以检查二进制RPM、SRPMs和SPEC文件的正确性。
+我们以bello.spec为例进行检查。
+# rpmlint bello.spec
+
+从bello.spec的检查结果中，发现一个error。具体报错描述我们需要检查srpm。
+
+# rpmlint ~/rpmbuild/SRPMS/bello-0.1-1.el7.src.rpm
+
+
