@@ -1,0 +1,419 @@
+5.2.1 标准消息中间件规范
+接下来，我们在 RHEL 上配置 JBoss AMQ7。
+
+首先创建目录：
+$sudo mkdir -p /opt/install/amq7
+$sudo chown -R jboss:jboss /opt/install/amq7
+
+创建名为 broker0 的 JBoss AMQ Broker 实例，并指定 guest 用户和角色的凭据，执行结果如图5- 7 所示。
+$ ./bin/artemis create \
+>     --user jboss --password jboss --role amq --allow-anonymous \
+>     /opt/install/amq7/broker0
+
+
+执行命令启动 broker0：
+$ "/opt/install/amq7/broker0/bin/artemis-service" start
+
+
+5.2.3 创建持久队列
+创建名为 DavidAddress 的 Anycast 地址，执行结果如图5- 11 所示。
+$ ./bin/artemis address create --name DavidAddress --anycast --no-multicast
+
+
+接下来，创建持久的 Anycast 队列与此前创建的 Anycast 地址相关联：
+$ ./bin/artemis queue create --name gpteQueue --address DavidAddress --anycast --durable --purge-on-no-consumers --auto-create-address
+
+
+接下来，使用 artemis 创建两个并行线程，向消息队列发送20 个 10 字节消息，每条消息之间有一秒休眠，执行结果如图5- 14 所示:
+$./bin/artemis producer --destination gpteAddress --message-count 10 --message-size 10 --sleep 1000 --threads 2 --url tcp://localhost:61616
+
+
+启动两个 Consumer，第一个 Consumer 读取队列中一条消息，第二个 Consumer 读取队列中其余的消息，执行结果如图5- 15 所示。
+启动第一个 Consumer，执行结果如下图所示，获取到一条消息后 Consumer 程序退出。
+$ ./bin/artemis consumer --destination gpteQueue --url tcp://localhost:61616 --message-count 1
+
+
+启动第二个 Consumer，执行结果如图5- 16 所示，获取到 19 条消息后 Consumer 程序退出。
+$ ./bin/artemis consumer --destination gpteQueue --url tcp://localhost:61616   
+
+
+5.2.4 AMQ的HA
+默认情况下，我们在一个AMQ Broker实例中创建Queue，消息Producer可以将消息发送到Queue中，我们通常称这种为Physical Queue。在AMQ中还存在Logical Queue的概念。也就是说，在多个physical queues上创建一个Logical Queue。我们将这个工作模式称为：Sharded Queues，在配置文件BROKER_INSTANCE_DIR/etc/broker.xml，如下所示：
+<configuration ...>
+  <core ...>
+    ...
+    <addresses>
+       <address name="sharded">
+          <anycast>
+             <queue name="q1" />
+             <queue name="q2" />
+             <queue name="q3" />
+          </anycast>
+       </address>
+    </addresses>
+</core>
+</configuration>
+
+
+5.2.6 AMQ 在 OpenShift 上的部署
+登录 AMQ pod，通过 Producer 向队列中发送消息，可以成功，如下所示。 
+# oc rsh broker-amq-1-94zkz
+sh-4.2$  ./broker/bin/artemis producer
+OpenJDK 64-Bit Server VM warning: If the number of processors is expected to increase from one, then you should configure the number of parallel GC threads appropriately using -XX:ParallelGCThreads=N
+Producer ActiveMQQueue[TEST], thread=0 Started to calculate elapsed time ...
+
+Producer ActiveMQQueue[TEST], thread=0 Produced: 1000 messages
+Producer ActiveMQQueue[TEST], thread=0 Elapsed time in second : 2 s
+Producer ActiveMQQueue[TEST], thread=0 Elapsed time in milli second : 2072 milli seconds
+AMQ Console 用于图形化管理。我们为 AMQ Console 在 OpenShift 中创建路由，首先创建路由配置文件，如下所示：
+# cat console.yaml
+apiVersion: v1
+kind: Route
+metadata:
+  labels:
+    app: broker-amq
+    application: broker-amq
+  name: console-jolokia
+spec:
+  port:
+    targetPort: console-jolokia
+  to:
+    kind: Service
+    name: broker-amq-headless
+    weight: 100
+  wildcardPolicy: Subdomain
+  host: star.broker-amq-headless.amq-demo.svc
+应用配置如下：
+[root@workstation-46de ~]# oc apply -f console.yaml
+
+
+部署成功以后，将 AMQ 的 statefulset 增加到 3 个，设置完成后，OpenShift 中会部署 3 个 AMQ Broker 的 pod，如图5- 29所示。
+
+#  oc scale statefulset broker-amq --replicas=3
+
+
+在 AMQ 的 pod 中发起 Producer，向 demoQueue 中发送消息：
+artemis producer --url tcp:// 129.146.152.123:30001 --message-count 300 --destination queue://demoQueue
+
+客户端启动 Consumer，连接 demoQueue，可以读取到消息，如下所示。
+#./artemis consumer --url tcp://129.146.152.123:30001 --message-count 100 --destination queue://demoQueue
+
+
+5.3.3 在 OpenShift 上部署 Kafka 集群
+在安装集群 Operator 之前，我们需要配置它运行的 Namespace。我们将通过修改 RoleBinding.yaml 文件以指向新创建的项目 amq-streams 来完成此操作。只需通过 sed 编辑所有文件即可完成此操作。
+[root@workstation-46de kafka]# sed -i 's/namespace: .*/namespace: amq-streams/' install/cluster-operator/*RoleBinding*.yaml
+确认更改生效：
+# more install/cluster-operator/020-RoleBinding-strimzi-cluster-operator.yaml
+
+
+我们通过配置文件部署 Kafka 集群，配置文件中包含如下设置：
+	3 个 Kafka broker：这是生产部署的最小建议数值
+	3个 ZooKeeper 节点：这是生产部署的最小建议数量
+	持久声明存储，确保将持久卷分配给 Kafka 和 ZooKeeper 实例
+# cat production-ready.yaml
+apiVersion: kafka.strimzi.io/v1alpha1
+kind: Kafka
+metadata:
+  name: production-ready
+spec:
+  kafka:
+    replicas: 3
+    listeners:
+      plain: {}
+      tls: {}
+    config:
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+    storage:
+      type: persistent-claim
+      size: 3Gi
+      deleteClaim: false
+  zookeeper:
+    replicas: 3
+    storage:
+      type: persistent-claim
+      size: 1Gi
+      deleteClaim: false
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+
+应用配置，查看部署结果如图5-37 所示。
+# oc apply -f production-ready.yaml
+
+
+通过配置文件创建 Kafka Topic，配置文件如下所示：
+# cat lines.yaml
+apiVersion: kafka.strimzi.io/v1alpha1
+kind: KafkaTopic
+metadata:
+  name: lines
+  labels:
+    strimzi.io/cluster: production-ready
+spec:
+  partitions: 2
+  replicas: 2
+  config:
+    retention.ms: 7200000
+    segment.bytes: 1073741824
+
+
+首先登录 Kafka 的 pod，然后利用 kafka-topics.sh 脚本查看 Topic 的信息，如下所示，可以看到分区是两个：
+# oc rsh production-ready-kafka-0
+Defaulting container name to kafka.
+Use 'oc describe pod/production-ready-kafka-0 -n amq-streams' to see all of the containers in this pod.
+
+sh-4.2$ cat bin/kafka-topics.sh
+#!/bin/bash
+exec $(dirname $0)/kafka-run-class.sh kafka.admin.TopicCommand "$@"
+
+
+sh-4.2$  bin/kafka-topics.sh --zookeeper localhost:2181 --topic lines –describe
+OpenJDK 64-Bit Server VM warning: If the number of processors is expected to increase from one, then you should configure the number of parallel GC threads appropriately using -XX:ParallelGCThreads=N
+Topic:lines     PartitionCount:2        ReplicationFactor:2     Configs:segment.bytes=1073741824,retention.ms=7200000
+        Topic: lines    Partition: 0    Leader: 2       Replicas: 2,1   Isr: 2,1
+        Topic: lines    Partition: 1    Leader: 0       Replicas: 0,2   Isr: 0,2
+
+增加 Partition 数量，首先需要修改配置文件，如下所示
+# cat lines-10.yaml
+apiVersion: kafka.strimzi.io/v1alpha1
+kind: KafkaTopic
+metadata:
+  name: lines
+  labels:
+    strimzi.io/cluster: production-ready
+spec:
+  partitions: 10
+  replicas: 2
+  config:
+    retention.ms: 14400000
+segment.bytes: 1073741824
+
+
+应用配置：
+#  oc apply -f lines-10.yaml
+kafkatopic.kafka.strimzi.io/lines configured
+
+首先登录 Kafka 的 pod，然后利用 kafka-topics.sh 脚本查看 Topic 的信息，分区数量已经从两个增加到了十个，如下所示：
+[root@workstation-46de kafka]# oc rsh production-ready-kafka-0
+Defaulting container name to kafka.
+Use 'oc describe pod/production-ready-kafka-0 -n amq-streams' to see all of the containers in this pod.
+sh-4.2$ bin/kafka-topics.sh --zookeeper localhost:2181 --topic lines --describe
+OpenJDK 64-Bit Server VM warning: If the number of processors is expected to increase from one, then you should configure the number of parallel GC threads appropriately using -XX:ParallelGCThreads=N
+Topic:lines     PartitionCount:10       ReplicationFactor:2     Configs:segment.bytes=1073741824,retention.ms=14400000
+        Topic: lines    Partition: 0    Leader: 2       Replicas: 2,1   Isr: 2,1
+        Topic: lines    Partition: 1    Leader: 0       Replicas: 0,2   Isr: 0,2
+        Topic: lines    Partition: 2    Leader: 1       Replicas: 1,2   Isr: 1,2
+        Topic: lines    Partition: 3    Leader: 2       Replicas: 2,1   Isr: 2,1
+        Topic: lines    Partition: 4    Leader: 0       Replicas: 0,2   Isr: 0,2
+        Topic: lines    Partition: 5    Leader: 1       Replicas: 1,0   Isr: 1,0
+        Topic: lines    Partition: 6    Leader: 2       Replicas: 2,0   Isr: 2,0
+        Topic: lines    Partition: 7    Leader: 0       Replicas: 0,1   Isr: 0,1
+        Topic: lines    Partition: 8    Leader: 1       Replicas: 1,2   Isr: 1,2
+        Topic: lines    Partition: 9    Leader: 2       Replicas: 2,1   Isr: 2,1
+
+接下来，通过 kafka-console-producer.sh 脚本启动 Producer，如下所示：
+sh-4.2$ cat  bin/kafka-console-producer.sh
+if [ "x$KAFKA_HEAP_OPTS" = "x" ]; then
+    export KAFKA_HEAP_OPTS="-Xmx512M"
+fi
+exec $(dirname $0)/kafka-run-class.sh kafka.tools.ConsoleProducer "$@"
+
+启动一个 Producer：
+sh-4.2$  bin/kafka-console-producer.sh --broker-list localhost:9092 --topic test-topic
+OpenJDK 64-Bit Server VM warning: If the number of processors is expected to increase from one, then you should configure the number of parallel GC threads appropriately using -XX:ParallelGCThreads=N
+>
+我们发送信息到到 Topic 中，第一次发送“david wei”，第二次发送“is doing the test!!!”如图5-38所示。
+ 
+图 5-38. 向 Topic 中发送信息
+
+接下来，使用 kafka-console-consumer.sh 脚本启动 Consumer 监听 Topic，如下所示：
+sh-4.2$ cat bin/kafka-console-consumer.sh
+if [ "x$KAFKA_HEAP_OPTS" = "x" ]; then
+    export KAFKA_HEAP_OPTS="-Xmx512M"
+fi
+
+exec $(dirname $0)/kafka-run-class.sh kafka.tools.ConsoleConsumer "$@"
+
+sh-4.2$ bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic test-topic --from-beginning
+
+
+5.3.4 配置 Kafka 外部访问
+在某些情况下，需要从外部访问部署在 OpenShift 中的 Kafka 群集。接下来我们介绍配置的方法。首先，使用包含外部 Listener 配置内容的文件重新部署 Kafka 集群，如下所示：
+ [root@workstation-46de ~]# cat production-ready-external-routes.yaml
+apiVersion: kafka.strimzi.io/v1alpha1
+kind: Kafka
+metadata:
+  name: production-ready
+spec:
+  kafka:
+    replicas: 3
+    listeners:
+      plain: {}
+      tls: {}
+      external:
+        type: route
+    config:
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+    storage:
+      type: persistent-claim
+      size: 3Gi
+      deleteClaim: false
+  zookeeper:
+    replicas: 3
+    storage:
+      type: persistent-claim
+      size: 1Gi
+      deleteClaim: false
+  entityOperator:
+    topicOperator: {}
+userOperator: {}
+
+应用配置文件：
+# oc apply -f production-ready-external-routes.yaml
+kafka.kafka.strimzi.io/production-ready configured 
+
+接下来，我们在 OpenShift 集群外部配置代理与 OpenShift 中的 Kafka 进行交互，外部客户端必须使用 TLS。首先，我们需要提取服务器的证书。
+# oc extract secret/production-ready-cluster-ca-cert --keys=ca.crt --to=- >certificate.crt
+# ca.crt
+
+然后，我们需要将其安装到 Java keystore。
+#  keytool -import -trustcacerts -alias root -file certificate.crt -keystore keystore.jks -storepass password -noprompt
+Certificate was added to keystore
+
+使用此证书 Producer 和 Consumer 两个应用，下载两个 JAR。
+#wget -O log-consumer.jar https://github.com/RedHatWorkshops/workshop-amq-streams/blob/master/bin/log-consumer.jar?raw=true
+#wget -O timer-producer.jar https://github.com/RedHatWorkshops/workshop-amq-streams/blob/master/bin/timer-producer.jar?raw=true
+使用新的配置设置启动两个应用程序。首先启动 Consumer 应用，访问 OpenShift 内部的 Kafka Broker，执行结果如下所示：
+java -jar log-consumer.jar \
+--camel.component.kafka.configuration.brokers=production-ready-kafka-bootstrap-amq-streams.apps-46de.generic.opentlc.com:443 \
+      --camel.component.kafka.configuration.security-protocol=SSL \
+      --camel.component.kafka.configuration.ssl-truststore-location=keystore.jks \
+      --camel.component.kafka.configuration.ssl-truststore-password=password
+
+启动 Producer 应用：
+java -jar timer-producer.jar \
+--camel.component.kafka.configuration.brokers=production-ready-kafka-bootstrap-amq-streams.apps-46de.generic.opentlc.com:443 \
+      --camel.component.kafka.configuration.security-protocol=SSL \
+      --camel.component.kafka.configuration.ssl-truststore-location=keystore.jks \
+      --camel.component.kafka.configuration.ssl-truststore-password=password --server.port=0
+
+
+在 OpenShift 集群中启动 Consumer 监听 Topic，可以看到结果如图 5-43所示，与外部 Consumer 看到信息一致：
+sh-4.2$ bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic lines --from-beginning
+
+
+5.3.5 配置 Mirror Maker
+部署第二套 Kafka 集群：Production-ready-target，作为现有 Production-ready Kafka 集群的目标端。集群部署配置文件如下所示：
+# cat production-ready-target.yaml
+apiVersion: kafka.strimzi.io/v1alpha1
+kind: Kafka
+metadata:
+  name: production-ready-target
+spec:
+  kafka:
+    replicas: 3
+    listeners:
+      plain: {}
+      tls: {}
+    config:
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+    storage:
+      type: persistent-claim
+      size: 3Gi
+      deleteClaim: false
+  zookeeper:
+    replicas: 3
+    storage:
+      type: persistent-claim
+      size: 1Gi
+      deleteClaim: false
+  entityOperator:
+    topicOperator: {}
+userOperator: {}
+
+应用配置文件，执行结果如图5-45 所示：两个 Kafka 集群已经部署成功：
+# oc apply -f production-ready-target.yaml
+
+
+首先部署 Mirror Maker，配置文件如下所示，它创建了两个 Kafka 集群 SVC 的联系。
+# cat mirror-maker-single-namespace.yaml
+apiVersion: kafka.strimzi.io/v1alpha1
+kind: KafkaMirrorMaker
+metadata:
+  name: mirror-maker
+spec:
+  image: strimzi/kafka-mirror-maker:latest
+  replicas: 1
+  consumer:
+    bootstrapServers: production-ready-kafka-bootstrap.amq-streams.svc:9092
+    groupId: mirror-maker-group-id
+  producer:
+    bootstrapServers: production-ready-target-kafka-bootstrap.amq-streams.svc:9092
+  whitelist: "lines|test-topic"
+
+应用配置如下，执行结果图5-46 所示，mirror maker pod 创建成功：
+[root@workstation-46de ~]# oc apply -f mirror-maker-single-namespace.yaml
+
+
+现在从目标 Kafka 集群中部署 Consumer，如下所示：
+# cat log-consumer-target.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: log-consumer
+  labels:
+    app: kafka-workshop
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: kafka-workshop
+        name: log-consumer
+    spec:
+      containers:
+        - name: log-consumer
+          image: docker.io/mbogoevici/log-consumer:latest
+          env:
+            - name: CAMEL_COMPONENT_KAFKA_CONFIGURATION_BROKERS
+              value: "production-ready-target-kafka-bootstrap.amq-streams.svc:9092"
+            - name: CAMEL_COMPONENT_KAFKA_CONFIGURATION_GROUP_ID
+              value: test-group
+
+应用配置文件：
+# oc apply -f log-consumer-target.yaml
+
+
+将 timer-producer 应用程序写入主 Kafka 集群，配置文件如下所示：
+# cat timer-producer.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: timer-producer
+  labels:
+    app: kafka-workshop
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: kafka-workshop
+        name: timer-producer
+    spec:
+      containers:
+        - name: timer-producer
+          image: docker.io/mbogoevici/timer-producer:latest
+          env:
+            - name: CAMEL_COMPONENT_KAFKA_CONFIGURATION_BROKERS
+              value: "production-ready-kafka-bootstrap.amq-streams.svc:9092"
+
+应用配置如下，执行结果如图5- 47 所示。
+# oc apply -f timer-producer.yaml
+
+
