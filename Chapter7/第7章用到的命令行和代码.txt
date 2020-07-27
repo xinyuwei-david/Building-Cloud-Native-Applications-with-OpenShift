@@ -1,0 +1,27 @@
+7.2.1 KIE的架构
+以本文实验代码为例，实验完整代码链接：https://github.com/gpe-mw-training/bxms_decision_mgmt_foundations_lab/tree/master/mortgages/src/main/resources/META-INF
+kmodule.xml内容如下所示：
+<kmodule xmlns="http://www.drools.org/xsd/kmodule" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <kbase name="kbase1" default="false" eventProcessingMode="stream" equalsBehavior="identity">
+    <ksession name="ksession.stateless" type="stateless" default="true" clockType="realtime">
+      <listeners>
+        <ruleRuntimeEventListener type="org.drools.core.event.DebugRuleRuntimeEventListener"/>
+        <agendaEventListener type="org.drools.core.event.DebugAgendaEventListener"/>
+      </listeners>
+    </ksession>
+    <ksession name="ksession.stateful" type="stateful" default="false" clockType="realtime">
+      <listeners>
+        <ruleRuntimeEventListener type="org.drools.core.event.DebugRuleRuntimeEventListener"/>
+        <agendaEventListener type="org.drools.core.event.DebugAgendaEventListener"/>
+      </listeners>
+    </ksession>
+  </kbase>
+</kmodule>
+
+
+7.4.2 抵押贷款应用源码分析
+抵押贷款源码地址页面如图7-20所示：
+https://github.com/gpe-mw-training/bxms_decision_mgmt_foundations_lab/tree/master/mortgages
+
+7.5.2 RHPAM与微服务的集成案例环境准备
+由于篇幅有限我们简单分析第一个流程：orderhardware.bpmn2（https://github.com/ocp-msa-devops/rhpam7-order-it-hw-demo-repo/blob/master/src/main/resources/org/jbpm/demo/itorders/orderhardware.bpmn2）。每个Case Management项目的AdHoc, Case ID 前缀和Case Roles属性都是唯一的，如图7-60所示。

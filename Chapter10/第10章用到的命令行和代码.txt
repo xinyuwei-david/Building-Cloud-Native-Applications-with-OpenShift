@@ -1,0 +1,156 @@
+10.1.5 基于 OpenShift 集群部署的 OpenWhisk
+基于OpenShift集群安装 OpenWhisk 的方法，参照https://github.com/apache/incubator-openwhisk-deploy-kube，由于篇幅有限，本小节只介绍大致的安装步骤。
+
+
+10.2.2 创建并验证第一个 Action：formatInput
+我们先看以一个 Action：formatInput，它的源码如下：
+$cat formatInput.js
+function main(params) {
+
+    // Format the Topic to replace . with /
+    if(params.topic) {
+      params.topic = params.topic.replace(/[.]/g,'/');
+    }
+
+    // Parse the input data to provide lat/long
+    if(params.data) {
+      data_values = params.data.split(" ");
+
+      params.latitude = data_values[0];
+      params.longitude = data_values[1];
+    }
+
+return params;
+
+
+
+10.2.3 创建并验证第二个 Action：enricher
+接下来，我们创建第二个 Action：enricher。它的作用是：根据传入的经纬度，在 MongDB 中查找资产的详细信息（名称、其地理围栏范围、图片等）。
+enricher.js 是 OpenWhisk action 的源码。
+var path = require("path");
+const format= require('util').format;
+require('dotenv').config({path: path.join(__dirname, '.env')});
+
+var MongoClient = require('mongodb').MongoClient;
+
+function enrich(params) {
+
+    // Validate Parameters
+    var mongoDbUser = process.env.MONGODB_USER;
+    var mongoDbPassword = process.env.MONGODB_PASSWORD;
+    var mongoDbHost = process.env.MONGODB_HOST;
+    var mongoDbDatabase = process.env.MONGODB_DATABASE;
+
+    if(!mongoDbUser || !mongoDbPassword || !mongoDbHost || !mongoDbDatabase) {
+      return {error: "Database Values Have Not Been Provided!"}
+    }
+
+    var url = format('mongodb://%s:%s@%s:27017/%s', mongoDbUser, mongoDbPassword, mongoDbHost, mongoDbDatabase);
+
+
+    var topic = params.topic;
+
+    if(topic) {
+      return new Promise(function(resolve, reject) {
+
+        MongoClient.connect(url, function(err, client){
+
+          if(err) {
+            console.error(err);
+            reject({"error":err.message});
+            return;
+          }
+
+          var db = client.db(mongoDbDatabase);
+
+          db.collection('assets').findOne({"topic": topic}, function (err, doc) {
+            if(err) {
+              console.error(err);
+              reject({"error":err.message});
+              return;
+            }
+
+            if(doc) {
+                for(index in doc) {
+                  if(index != "_id") {
+                    params[index] = doc[index];
+                  }
+                }
+            }
+            else {
+                console.log("No Asset Found with topic '%s'", topic);
+            }
+            client.close();
+            resolve(params);
+        });
+
+
+        });
+
+      });
+    }
+    else {
+      console.log("Topic Has Not Been Provided")
+      return params;
+    }
+
+  };
+
+
+
+10.2.5 创建并验证第三个 Action：geofence
+地理围栏是地理区域的虚拟边界。地理围栏可用于许多物联网用例，包括资产跟踪、安全、监控和零售等。
+
+geofence.js 是 geofence Action 的源码：
+    // Execute logic to enforce geofence if required parameters are present
+    if(params.latitude && params.longitude && params.center_latitude && params.center_longitude && params.geofence_radius) {
+
+
+      var R = 6371e3; // metres
+      var φ1 = degrees_to_radians(params.center_latitude);
+      var φ2 = degrees_to_radians(params.latitude);
+      var Δφ = degrees_to_radians(params.latitude-params.center_latitude);
+      var Δλ = degrees_to_radians(params.longitude-params.center_longitude);
+
+      var a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+              Math.cos(φ1) * Math.cos(φ2) *
+              Math.sin(Δλ/2) * Math.sin(Δλ/2);
+      var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+      var d = R * c;
+
+      if(d > params.geofence_radius) {
+        params.alert = 1;
+      }
+      else {
+        params.alert = 0;
+      }
+    }
+    else {
+      console.log("Required Parameters for Geofence Calculation Not Provided");
+      return {error: "Required Parameters for Geofence Calculation Not Provided"}
+    }
+
+    return params;
+  }
+
+function degrees_to_radians(degrees)
+{
+  var pi = Math.PI;
+  return degrees * (pi/180);
+
+
+可以看到，该资产在其物理围栏之内（如上图所示），为了方便读者查看，将其贴出：
+        "result": {
+            "alert": 0,
+            "center_latitude": "37.784237",
+            "center_longitude": "-122.401410",
+            "data": "37.784237 -122.401410",
+            "geofence_radius": "1.0",
+            "latitude": "37.784237",
+            "location": "Boiler room",
+            "longitude": "-122.401410",
+            "name": "Surface blow down controller",
+            "picture": "Blowdown-Controller.jpg",
+            "topic": "/sf/boiler/controller"
+	}

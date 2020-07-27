@@ -1,0 +1,23 @@
+8.2.2 OpenShift与Keycloak的集成
+OpenShift 4.3对接OpenID的方式，与OpenShift3有所区别，原理是创建 OpenID Connect CRs，然后应用配置。如果使用OpenShift 4.3的Web UI进行配置，步骤较为简单，本文不再赘述。具体步骤可以参考：https://docs.openshift.com/container-platform/4.3/authentication/identity_providers/configuring-oidc-identity-provider.html
+
+8.4.1 配置出口防火墙
+配置出口防火墙是通过配置networkpolicy实现，如下所示：
+kind: EgressNetworkPolicy
+apiVersion: v1
+metadata:
+  name: myfirewall
+spec:
+  egress:
+  - to:
+      cidrSelector: 192.168.12.0/24
+    type: Allow
+  - to:
+      dnsName: db-srv.example.com
+    type: Allow
+  - to:
+      dnsName: analytics.example.com
+    type: Allow
+  - to:
+      cidrSelector: 0.0.0.0/0
+    type: Deny

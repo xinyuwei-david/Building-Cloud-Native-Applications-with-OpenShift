@@ -1,0 +1,84 @@
+11.2 在OpenShift 集群中部署 Caffe2
+
+接下来，使用如下模板在OpenShift 集群中部署 Caffe2 的 pod：
+kind: List
+apiVersion: v1
+metadata: {}
+items:
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: caffe2
+    labels:
+      app: caffe2
+  spec:
+    ports:
+    - name: caffe2
+      port: 80
+      targetPort: 8888
+      protocol: TCP
+    selector:
+      app: caffe2
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: caffe2 
+    labels:
+      app: caffe2
+  spec:
+    containers:
+      - name: caffe2
+        image: "caffe2ai/caffe2"
+        command: ["Jupyter"] 
+        args: ["notebook", "--allow-root", "--ip=0.0.0.0", "--no-browser"]
+        ports:
+        - containerPort: 8888
+        securityContext:
+          privileged: true
+        resources:
+          limits:
+            nvidia.com/gpu: 1 # requesting 2 GPU
+    tolerations:                              
+    - key: "nvidia.com/gpu"                 
+      operator: "Equal"                     
+      value: "value"                        
+      effect: "NoSchedule"
+
+11.4.2 Open Data Hub 的安装
+在这里，我们看到一个YAML文件，以自定义你的部署。大多数选项被禁用，我们可以修改一些参数以确保JupyterHub和Spark的组件适合我们的集群资源约束。注意一些参数，如下所示：
+example-opendatahub
+metadata:
+ name: example-opendatahub
+odh_deploy:
+aicoe-jupyterhub:
+  odh_deploy: true
+  # Set the Jupyter notebook pod to 1CPU and 2Gi of memory
+  notebook_cpu: 1
+  notebook_memory: 1Gi
+  # Disable creation of the spark worker node in the cluster
+  spark_master_nodes: 1
+  spark_worker_nodes: 0
+  # Reduce the master node to 1CPU and 1GB 
+  spark_memory: 1Gi
+  spark_cpu: 1
+ spark-operator:
+  odh_deploy: true
+
+
+复制以下代码以测试基本的Spark连接。
+from pyspark.sql import SparkSession, SQLContext
+import os
+import socket
+
+# Add the necessary Hadoop and AWS jars to access Ceph from Spark
+# Can be omitted if s3 storage access is not required
+os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages org.apache.hadoop:hadoop-aws:2.7.3,com.amazonaws:aws-java-sdk:1.7.4 pyspark-shell'
+
+# create a spark session
+spark = SparkSession.builder.master('local[3]').getOrCreate()
+
+# test your spark connection
+spark.range(5, numPartitions=5).rdd.map(lambda x: socket.gethostname()).distinct().collect()
+运行NoteBook。如果成功，运行成功如下：
+['jupyterhub-nb-kube-3aadmin']
+至此，Open Data Hub的基本功能展示完毕。

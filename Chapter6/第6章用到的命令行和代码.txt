@@ -1,0 +1,98 @@
+6.2.3 Infinispan功能验证
+JBoss Data Grid集群的模式配置，通过修改配置文件进行编辑。复制模式分为同步复制和异步复制。异步复制可以使用复制队列，更新存储在队列中定期或当队列达到大小阈值时批量传输到其他集群成员，如下所示：
+<clustering ...
+    <async
+        useReplQueue="true"
+        replQueueInterval="10000" <!-- milliseconds -->
+        replQueueMaxElements="500"
+
+接下来，我们配置客户端程序来连接缓存。
+在客户端配置连接Infinispan的配置文件，书写Infinispan的IP地址和hotrod端口号，如下所示：
+#cat jdg.properties
+jdg.host=10.0.0.1  
+jdg.hotrod.port=11222
+
+
+
+6.2.4 在OpenShift上实现Infinispan
+首先，为Infinispan Operator添加自定义资源定义（CRD）和基于角色的访问控制（RBAC）资源。
+[root@master ~]# oc apply -f https://raw.githubusercontent.com/infinispan/infinispan-operator/master/deploy/crd.yaml
+customresourcedefinition.apiextensions.k8s.io/infinispans.infinispan.org configured
+
+安装RBAC资源：
+[root@master ~]# oc apply -f https://raw.githubusercontent.com/infinispan/infinispan-operator/master/deploy/rbac.yaml
+role.rbac.authorization.k8s.io/infinispan-operator created
+serviceaccount/infinispan-operator created
+rolebinding.rbac.authorization.k8s.io/infinispan-operator created
+
+
+
+通过模板部署Infinispan Operator：
+[root@master ~]# oc apply -f https://raw.githubusercontent.com/infinispan/infinispan-operator/master/deploy/operator.yaml
+deployment.apps/infinispan-operator created
+
+
+接下来，我们在OpenShift中创建包含凭证的secrets，以便应用程序访问Infinispan节点时，可以进行进行身份验证。
+
+[root@master ~]#  oc apply -f https://raw.githubusercontent.com/infinispan/infinispan-operator/master/deploy/cr/auth/connect_secret.yaml
+secret/connect-secret created
+
+创建Infinispan部署的yaml，如下所示。配置文件中定义了Infinispan集群名称为：david-infinispan、集群节点数为2、指定包含身份验证secret为connect-secret（上文创建的）。
+ [root@master ~]# cat > cr_minimal_with_auth.yaml<<EOF
+> apiVersion: infinispan.org/v1
+> kind: Infinispan
+> metadata:
+>   name: david-infinispan
+> spec:
+>   replicas: 2
+>   security:
+>     endpointSecret: connect-secret
+> EOF
+
+应用配置：
+[root@master ~]# oc apply -f cr_minimal_with_auth.yaml
+infinispan.infinispan.org/david-infinispan created
+
+
+Liveness健康检查脚本如下所示：
+sh-4.4$ cat /opt/infinispan/bin/livenessProbe.sh
+#!/bin/bash
+set -e
+
+source $(dirname $0)/probe-common.sh
+curl --http1.1 --insecure ${AUTH} --fail --silent --show-error --output /dev/null --head ${HTTP}://${HOSTNAME}:11222/rest/v2/cache-managers/DefaultCacheManager/health
+
+Readiness健康检查脚本如下所示：
+sh-4.4$ cat /opt/infinispan/bin/readinessProbe.sh
+#!/bin/bash
+set -e
+
+source $(dirname $0)/probe-common.sh
+curl --http1.1 --insecure ${AUTH} --fail --silent --show-error -X GET ${HTTP}://${HOSTNAME}:11222/rest/v2/cache-managers/DefaultCacheManager/health \
+ | grep -Po '"health_status":.*?[^\\]",' \
+ | grep -q '\"HEALTHY\"'
+
+
+6.3.3 Redis 在OpenShift上的实现
+由于篇幅有限，本文不展示基于Redis Enterprise Operator在OpenShift上的部署的具体步骤。
+Operator部署要求OpenShift至少有三个Node，我们以实验中使用的模板为例，如下所示：
+# cat redis-enterprise-cluster.yaml
+apiVersion: "app.redislabs.com/v1alpha1"
+kind: "RedisEnterpriseCluster"
+metadata:
+  name: "david-redis-enterprise"
+spec:
+  nodes: 5
+  uiServiceType: ClusterIP
+  username: "weixinyu@david.com"
+  redisEnterpriseNodeResources:
+    limits:
+      cpu: "4000m"
+      memory: 4Gi
+    requests:
+      cpu: "4000m"
+      memory: 4Gi
+
+
+
+

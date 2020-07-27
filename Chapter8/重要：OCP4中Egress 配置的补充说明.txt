@@ -1,0 +1,53 @@
+在OCP3时代，我们可以通过：配置Egress Router、Egress IP、出口防火墙三种模式实现。实际上常用的是前两种。Egress Router比Egress IP的方式的好处是，除了可以设置pod的出口IP，还能设置pod的destination IP。缺点是这种配置比较复杂，而且无法自动实现高可用（需要部署两个Egress Router）。Egress Router的方式，在OCP4已经不提了，或者说已经不用了。因此在OCP4时代，配置pod的Egress固定IP，使用Egress IP即可。它配置肩简单、自带高可用，靠谱。
+
+
+
+Egress IP是基于项目级别的：例如给一个项目设置一个出口IP：
+
+$ oc patch netnamespace toto -p ‘{“egressIPs”: [“10.42.253.45″,”10.42.253.54”]}’
+
+
+
+这种配置还需要我们将这些出口IP与OpenShift节点的主机子网相关联：
+
+$ oc patch hostsubnet compute3 -p ‘{“egressIPs”: [“10.42.253.45”]}’
+
+$ oc patch hostsubnet compute1 -p ‘{“egressIPs”: [“10.42.253.54”]}’
+
+
+
+然后，从toto netnamespace的Pod中，我们可以尝试访问远程服务：
+
+$ oc rsh -n toto jenkins-1-xyz
+sh-4.2$ ping 8.8.8.8
+[…]
+64 bytes from 8.8.8.8: icmp_seq=90 ttl=119 time=4.01 ms
+64 bytes from 8.8.8.8: icmp_seq=91 ttl=119 time=4.52 ms
+^C
+— 8.8.8.8 ping statistics —
+91 packets transmitted, 89 received, 2% packet loss, time 90123ms
+rtt min/avg/max/mdev = 3.224/4.350/12.042/1.073 ms
+
+
+
+注意，我们确实丢失了一些数据包。这样做的原因是，我重新启动了comp3主机（测试Egress IP的高可用），而我的ping最初是从该主机离开群集的。当节点标记为“Not Ready”时，流量通过第二个节点，即compute1，其中包含与toto netnamespace关联的egressIP。从我们的网关，我们可以确认新IP正在临时使用：
+
+
+
+# tcpdump -vvni vlan5 host 10.42.253.54
+tcpdump: listening on vlan5, link-type EN10MB
+13:11:13.066821 10.42.253.54 > 8.8.8.8: icmp: echo request (id:023e seq:3) [icmp cksum ok] (DF) (ttl 63, id 24619, len 84)
+13:11:13.070596 arp who-has 10.42.253.54 tell 10.42.253.5
+13:11:13.071194 arp reply 10.42.253.54 is-at 52:54:00:b1:15:b9
+13:11:13.071225 8.8.8.8 > 10.42.253.54: icmp: echo reply (id:023e seq:3) [icmp cksum ok] [tos 0x4] (ttl 120, id 14757, len 84)
+13:11:14.066796 10.42.253.54 > 8.8.8.8: icmp: echo request (id:023e seq:4) [icmp cksum ok] (DF) (ttl 63, id 25114, len 84)
+13:11:14.069990 8.8.8.8 > 10.42.253.54: icmp: echo reply (id:023e seq:4) [icmp cksum ok] [tos 0x4] (ttl 120, id 515, len 84)
+
+那么，如何删除配置的Egress IP？
+删除namespace的Egress IP 
+ oc patch --type=merge netnamespace project1 -p '{"egressIPs":[]}'  
+
+ 删除节点的hostsubnet 
+ oc patch --type=merge hostsubnet worker-0 -p '{"egressCIDRs":[]}' 
+
+

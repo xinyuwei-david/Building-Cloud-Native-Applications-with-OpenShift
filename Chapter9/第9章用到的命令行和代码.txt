@@ -1,0 +1,219 @@
+9.1.2 基于OpenShift3.11和Camel的微服务集成
+文中涉及大量的源代码，由于篇幅有限，下文三个业务场景中只列出关键代码，相关完整代码请参照Github（https://github.com/ocp-msa-devops/agile_integration_advanced_labs/tree/master/code/fuse）：
+ 源码的三个子目录为：
+	01_file-split-and-transform/file-split-transform-lab	
+	02_rest_split_transform_amq/rest-split-transform-amq-lab	
+	03_rest-publish-and-fix-errors/rest-publish-and-fix-errors-lab
+
+
+1. 场景1：通过Camel实现文件的转换
+（1）	整体场景介绍
+A系统生成的customers.csv文件内容如下：
+Rotobots,NA,true,Bill,Smith,100 N Park Ave.,Phoenix,AZ,85017,602-555-1100
+BikesBikesBikes,NA,true,George,Jungle,1101 Smith St.,Raleigh,NC,27519,919-555-0800
+CloudyCloud,EU,true,Fred,Quicksand,202 Barney Blvd.,Rock City,MI,19728,313-555-1234
+ErrorError,,,EU,true,Fred,Quicksand,202 Barney Blvd.,Rock City,MI,19728,313-555-1234
+
+
+接下来，根据该企业IT部门提供的两个Schema文件customer.csv和account.json，创建两个POJO、一个XML数据转换规则文件以及Camel路由 XML文件。
+第一个Schema文件customer.csv定义了针对A系统生成的CSV文件被反序列化时每个字段。我们需要根据Schema的内容书写POJO: Customer.csv，这个Java类用于反序列化操作。customer.csv内容如下：
+companyName,region,active,firstName,lastName,streetAddr,city,state,zip,phone
+string,string,boolean,string,string,string,string,string,string,string
+第二个Schema文件account.json定义了数据转化后的字段格式，内容如下：
+{
+  "type": "object",
+  "properties": {
+    "company": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "geo": {
+          "type": "string"
+        },
+        "active": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "geo",
+        "active"
+      ]
+    },
+    "contact": {
+      "type": "object",
+      "properties": {
+        "firstName": {
+          "type": "string"
+        },
+        "lastName": {
+          "type": "string"
+        },
+        "streetAddr": {
+          "type": "string"
+        },
+        "city": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "zip": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "required": [
+    "company",
+    "contact"
+  ]
+}
+（2）	创建 POJO 和 transfermation.xml
+可以根据 Flatpack DataFormat 的语法来配置 Customer.java 和 Account.java。
+1) 根据 Schema 文件 customer.csv 编写 Customer.java，如下：
+@CsvRecord(separator = ",")
+public class Customer {
+    @DataField(pos = 1)
+    private String companyName;
+    @DataField(pos = 2)
+    public String getCompanyName() {
+        return companyName;
+    }
+
+    public void setCompanyName(String companyName) {
+        this.companyName = companyName;
+    }
+}
+Customer.java负责将拆分（Camel调用Splitter EIP按照换行符拆分）后的格式正确的报文进行反序列化操作，从CSV映射成Java对象。
+2) 编写 Account.java
+Account.java的作用是将Java的对象进行数据转换、序列化操作（@JsonProperty），以JSON格式保存到文件中。内容如下：
+@JsonInclude(JsonInclude.Include.NON_NULL)
+@Generated("org.jsonschema2pojo")
+@JsonPropertyOrder({
+    "company",
+    "contact"
+})
+public class Account {
+
+    /**
+     * 
+     * (Required)
+     * 
+     */
+    @JsonProperty("company")
+    private Company company;
+    /**
+     * 
+     * (Required)
+     * 
+     */
+  
+    @JsonProperty("company")
+    public Company getCompany() {
+        return company;
+    }
+
+    /**
+     * 
+     * (Required)
+     * 
+     * @param company
+     *     The company
+     */
+    @JsonProperty("company")
+    public void setCompany(Company company) {
+        this.company = company;
+}
+
+
+配置后的transformation.xml的源码如下：
+    <mapping>
+        <class-a>org.acme.Customer</class-a>
+        <class-b>org.globex.Account</class-b>
+        <field>
+            <a>zip</a>
+            <b>contact.zip</b>
+        </field>
+        <field>
+            <a>firstName</a>
+            <b>contact.firstName</b>
+        </field>
+        <field>
+            <a>lastName</a>
+            <b>contact.lastName</b>
+        </field>
+        <field>
+            <a>streetAddr</a>
+            <b>contact.streetAddr</b>
+        </field>
+        <field>
+            <a>city</a>
+            <b>contact.city</b>
+        </field>
+        <field>
+            <a>phone</a>
+            <b>contact.phone</b>
+        </field>
+        <field>
+            <a>state</a>
+            <b>contact.state</b>
+        </field>
+
+
+图9-12 Camel路由规则
+查看源代码：
+fabric8/route.properties
+ <propertyPlaceholder id="properties" location="fabric8/route.properties"/>
+        <endpoint id="csv2json" uri="dozer:csv2json?sourceModel=org.acme.Customer&amp;targetModel=org.globex.Account&amp;marshalId=json&amp;unmarshalId=csv&amp;mappingFile=transformation.xml"/>
+        <dataFormats>
+            <bindy classType="org.acme.Customer" id="csv" type="Csv"/>
+            <json id="json" library="Jackson"/>
+        </dataFormats>
+        <route id="_route1">
+            <from id="_from1" uri="file:src/data/inbox?fileName=customers.csv&amp;noop=true"/>
+            <onException id="_onException1">
+                <exception>java.lang.Exception</exception>
+                <handled>
+                    <constant>true</constant>
+                </handled>
+                <log id="_log1" loggingLevel="ERROR" message="error-msg: ${exception.message}"/>
+                <to id="_to3" uri="file:src/data/error?fileName=account-${property.CamelSplitIndex}.json.error"/>
+            </onException>
+            <split id="_split1">
+                <tokenize token="\n"/>
+                <to id="_to1" ref="csv2json"/>
+                <convertBodyTo id="_convertBodyTo1" type="java.lang.String"/>
+                <to id="_to2" uri="file:src/data/outbox?fileName=account-${property.CamelSplitIndex}.json"/>
+            </split>
+        </route>
+    </camelContext>
+</beans>
+下面我们对路由的源代码进行分析。
+
+
+
+（4）	执行路由
+以Spring Boot方式运行Camel。Spring Boot Application.java（代码如下所示）的作用就是运行CamelContext.xml。
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.web.servlet.ServletRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ImportResource;
+@SpringBootApplication
+// load regular Spring XML file from the classpath that contains the Camel XML DSL
+@ImportResource({"classpath:spring/camel-context.xml"})
+public class Application {
+
+    /**
+     * A main method to start this application.
+     */
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}
