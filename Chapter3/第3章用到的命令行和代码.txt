@@ -1,0 +1,373 @@
+3.1.2 Java应用的打包与JDK
+执行maven打包命令时，调用的pom.xml中的plugin。
+我们以在《OpenShift在企业中的实践 PaaS DevOps 微服务》使用过的名为customer微服务代码为例，查看其pom.xml文件。
+https://github.com/ocp-msa-devops/istio-tutorial/blob/master/customer/java/springboot/pom.xml
+我们查看maven-plugin为spring-boot-maven-plugin，因此应用构建完打完的是Jar包，如下所示：
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+接下来，我们再查看pom.xml中对Web依赖的引用，引用了spring-boot-starter-web如下所示：
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+
+3.4.1 编译和部署 Quarkus 应用
+从 GitHub 上下载 Quarkus 测试代码，如下所示：
+[root@master ~]# git clone https://github.com/redhat-developer-demos/quarkus-tutorial
+
+在 OpenShift 中创建项目 quarkustutorial，用于后续部署容器化应用。
+[root@master ~]# oc new-project quarkustutorial
+
+设置环境变量，如下所示：
+[root@master ~]# cd quarkus-tutorial
+[root@master quarkus-tutorial]# export TUTORIAL_HOME=`pwd`
+[root@master quarkus-tutorial]# export QUARKUS_VERSION=0.21.2
+
+在 RHEL 中创建 Quarkus 项目，如下所示：
+mvn io.quarkus:quarkus-maven-plugin:$QUARKUS_VERSION:create \
+  -DprojectGroupId="com.example" \
+  -DprojectArtifactId="fruits-app" \
+  -DprojectVersion="1.0-SNAPSHOT" \
+  -DclassName="FruitResource" \
+  -Dpath="fruit"
+
+
+查看项目中生成的文件，如下所示：
+[root@master quarkus-tutorial]# ls -al /root/quarkus-tutorial/work/fruits-app/.
+
+
+我们查看应用的源码，如下所示：
+#cat src/main/java/com/example/FruitResource.java
+
+
+首先通过传统的 JVM 模式生成应用，编译成功结果如图 3-15 所示：
+./mvnw -DskipTests clean package
+
+
+查看编译生成的 jar 文件，如下所示：
+ [root@node fruits-app]# ls -al target/fruits-app-1.0-SNAPSHOT-runner.jar
+
+
+接下来，以 JVM 的方式运行应用，如下所示：
+ [root@node fruits-app]# java -jar target/fruits-app-1.0-SNAPSHOT-runner.jar
+
+
+接下来，我们验证 Docker-Native 的模式来编辑应用，生成二进制文件。在编译的过程会使用红帽提供的 docker image，构建成功后在 target 目录中生成独立的二进制文件。执行如下命令启动编译：
+[root@node fruits-app]# ./mvnw package -DskipTests -Pnative -Dquarkus.native.container-build=true
+
+
+从 fruits-app-1.0-SNAPSHOT-runner.jar 文件到二进制构建过程中会嵌入一些库文件（这些库文件是生成 fruits-app-1.0-SNAPSHOT-runner.jar 文件时产生的），以 class 的形式存到二进制文件中。lib 目录中包含二进制文件 fruits-app-1.0-SNAPSHOT-runner 运行所需要内容，如 org.graalvm.sdk.graal-sdk-19.2.0.1.jar，如下所示：
+[root@node target]# cd fruits-app-1.0-SNAPSHOT-native-image-source-jar
+[root@node fruits-app-1.0-SNAPSHOT-native-image-source-jar]# ls
+fruits-app-1.0-SNAPSHOT-runner  fruits-app-1.0-SNAPSHOT-runner.jar  lib
+[root@node fruits-app-1.0-SNAPSHOT-native-image-source-jar]# ls lib/* |grep -i gra
+lib/org.graalvm.sdk.graal-sdk-19.2.0.1.jar
+
+查看生成的二进制文件 fruits-app-1.0-SNAPSHOT-runner，直接在 RHEL7 中运行，如下所示：
+[root@node fruits-app]# ls -al target/fruits-app-1.0-SNAPSHOT-runner
+-rwxr-xr-x. 1 root root 23092264 Nov  7 22:28 target/fruits-app-1.0-SNAPSHOT-runner
+
+[root@node target]# ./fruits-app-1.0-SNAPSHOT-runner
+
+
+传统 JVM 模式运行的 docker file 如下所示，我们可以看到 docker file 使用的基础镜像是 openjdk8，如下所示：
+[root@node docker]# cat Dockerfile.jvm
+FROM fabric8/java-alpine-openjdk8-jre
+ENV JAVA_OPTIONS="-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+ENV AB_ENABLED=jmx_exporter
+COPY target/lib/* /deployments/lib/
+COPY target/*-runner.jar /deployments/app.jar
+EXPOSE 8080
+
+# run with user 1001 and be prepared for be running in OpenShift too
+RUN adduser -G root --no-create-home --disabled-password 1001 \
+  && chown -R 1001 /deployments \
+  && chmod -R "g+rwX" /deployments \
+  && chown -R 1001:root /deployments
+USER 1001
+
+ENTRYPOINT [ "/deployments/run-java.sh" ]
+Native 模式运行的 docker file 如下所示，使用的基础镜像是 ubi-minimal。UBI 的全称是：Universal Base Image，这是红帽 RHEL 最轻量级的基础容器镜像，如下所示：
+ [root@node docker]# cat Dockerfile.native
+FROM registry.access.redhat.com/ubi8/ubi-minimal
+WORKDIR /work/
+COPY target/*-runner /work/application
+RUN chmod 775 /work
+EXPOSE 8080
+CMD ["./application", "-Dquarkus.http.host=0.0.0.0"]
+在构建的时候，推荐使用 Dockerfile.native 模式构建 docker image，构建并运行的命令如下：
+[root@node fruits-app]# docker build -f src/main/docker/Dockerfile.native -t example/fruits-app:1.0-SNAPSHOT . && \
+> docker run -it --rm -p 8080:8080 example/fruits-app:1.0-SNAPSHOT
+
+
+3.4.2 Quarkus 的热加载
+以开发模式编译并热部署应用，如下所示：
+ [root@master fruits-app]# ./mvnw compile quarkus:dev
+
+接下来，修改源码文件 src/main/java/com/example/FruitResource.java，将访问返回从“hello”修改为“hello Davidwei!”，如下所示：
+package com.example;
+
+import javax.ws.rs.GET;
+import javax.ws.rs.Path;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
+
+@Path("/fruit")
+public class FruitResource {
+
+    @GET
+    @Produces(MediaType.TEXT_PLAIN)
+    public String hello() {
+        return "hello Davidwei!";
+    }
+}
+
+
+3.4.3 在 OpenShift 中部署 Quarkus 应用程序
+通过命令行可以列出 Quarkers 可用和支持的扩展，如下所示：
+[root@master fruits-app]# ./mvnw quarkus:list-extensions
+
+
+添加 Quarkus Kubernetes 扩展，该扩展使用 Dekorate 生成默认的 Kubernetes 资源模板，如下所示：
+ [root@master fruits-app]# ./mvnw quarkus:add-extension -Dextensions="quarkus-kubernetes"
+
+
+配置用于部署到 OpenShift 的容器和组和名称，将以下属性加到 src/main/resources /application.properties，如下所示：
+[root@master resources]# cat application.properties
+quarkus.kubernetes.group=example
+quarkus.application.name=fruits-app
+
+接下来，运行 Maven 目标来生成 Kubernetes 资源，命令执行结果如图 3-22 所示：
+./mvnw package -DskipTests
+
+
+接下来，我们检查自动生成的 Kubernetes 资源，如下所示（这里使用上面步骤中生成的容器镜像 fruits-app:1.0-SNAPSHOT）：
+ [root@master fruits-app]# cat target/wiring-classes/META-INF/kubernetes/kubernetes.yml
+
+
+在 OpenShift 中应用 Kubernetes 资源：
+[root@master fruits-app]# oc apply -f  target/wiring-classes/META-INF/kubernetes/kubernetes.yml
+service/fruits-app created
+
+
+在 OpenShift 中创建路由。
+[root@master ~]# oc expose service fruits-app
+route.route.openshift.io/fruits-app exposed
+
+通过 curl 验证调用应用 fruit URI 的返回值，确保应用运行正常：
+[root@master ~]# SVC_URL=$(oc get routes fruits-app -o jsonpath='{.spec.host}')
+[root@master ~]# curl $SVC_URL/fruit
+
+3.4.4 Quarkus 应用添加 Rest Client 扩展
+我们还需要创建一个 POJO 对象，该对象用于将 JSON 消息从http://www.fruityvice.com反序列化为 Java 对象。
+在 src/main/java/com/example 中创建名为 FruityVice 的新 Java 文件，其内容下所示：
+ [root@master example]# cat FruityVice
+package com.example;
+
+public class FruityVice {
+
+    public static FruityVice EMPTY_FRUIT = new FruityVice();
+
+    private String name;
+    private Nutritions nutritions;
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public Nutritions getNutritions() {
+        return nutritions;
+    }
+
+    public void setNutritions(Nutritions nutritions) {
+        this.nutritions = nutritions;
+    }
+
+    public static class Nutritions {
+        private double fat;
+        private int calories;
+
+        public double getFat() {
+            return fat;
+        }
+
+        public void setFat(double fat) {
+            this.fat = fat;
+        }
+
+        public int getCalories() {
+            return calories;
+        }
+
+        public void setCalories(int calories) {
+            this.calories = calories;
+        }
+
+    }
+}
+
+接下来创建一个 Java 接口，该接口充当代码和外部服务之间的客户端。在 src/main/java/com/example 中创建名为 FruityViceService 的新 Java 文件，内容如下所示：
+ [root@master example]# cat FruityViceService
+package com.example;
+
+import java.util.List;
+
+import javax.ws.rs.GET;
+import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
+
+import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
+
+@Path("/api")
+@RegisterRestClient
+public interface FruityViceService {
+
+    @GET
+    @Path("/fruit/all")
+    @Produces(MediaType.APPLICATION_JSON)
+    public List<FruityVice> getAllFruits();
+
+    @GET
+    @Path("/fruit/{name}")
+    @Produces(MediaType.APPLICATION_JSON)
+    public FruityVice getFruitByName(@PathParam("name") String name);
+
+}
+配置 FruityVice 服务，将以下属性添加到 src/main/resources/application.properties 文件中，下所示：
+ [root@master fruits-app]# cat src/main/resources/application.properties
+quarkus.kubernetes.group=example
+quarkus.application.name=fruits-app
+com.example.FruityViceService/mp-rest/url=http://www.fruityvice.com
+最后，修改 src/main/java/com/example/FruitResource.java，增加 FruityViceService 的调用，如下所示：
+[root@master fruits-app]# cat src/main/java/com/example/FruitResource.java
+package com.example;
+
+import javax.ws.rs.GET;
+import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
+
+import org.eclipse.microprofile.rest.client.inject.RestClient;
+
+import com.example.FruityViceService;
+
+@Path("/fruit")
+public class FruitResource {
+
+    @GET
+    @Produces(MediaType.TEXT_PLAIN)
+    public String hello() {
+        return "hello";
+    }
+
+
+@RestClient
+FruityViceService fruityViceService;
+@Path("{name}")
+@GET
+@Produces(MediaType.APPLICATION_JSON)
+public FruityVice getFruitInfoByName(@PathParam("name") String name) {
+    return fruityViceService.getFruitByName(name);
+}
+}
+
+我们以开发模式启动应用程序，命令执行结果如图 3-27 所示：
+./mvnw compile quarkus:dev
+
+
+3.4.5 Quarkus 应用的容错能力
+我们为 Quarkus 应用程序添加 Fault Tolerance 扩展（quarkus-smallrye-fault-tolerance），执行如下命令，执行结果如图 3-29 所示：
+./mvnw quarkus:add-extension -Dextension="quarkus-smallrye-fault-tolerance"
+
+
+接下来在 FruityViceService 中添加重试策略。添加 org.eclipse.microprofile.faulttolerance.Retry 到源码文件 src/main/java/java/com/example/FruityViceService.java 中，并添加错误重试的次数和时间（maxRetries = 3, delay = 2000）如下所示：
+package com.example;
+import java.util.List;
+
+import javax.ws.rs.GET;
+import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
+
+import org.eclipse.microprofile.faulttolerance.Retry;
+import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
+
+@Path("/api")
+@RegisterRestClient
+public interface FruityViceService {
+
+    @GET
+    @Path("/fruit/all")
+    @Produces(MediaType.APPLICATION_JSON)
+    public List<FruityVice> getAllFruits();
+
+    @GET
+    @Path("/fruit/{name}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Retry(maxRetries = 3, delay = 2000)
+    public FruityVice getFruitByName(@PathParam("name") String name);
+
+}
+
+完成配置后，如果访问应用出现任何错误，将自动执行 3 次重试，两次重试之间等待 2 秒钟。
+接下来，我们以开发模式编译并加载应用。
+./mvnw compile quarkus:dev
+
+
+有时候，我们并不需要在应用前台报错时显示代码内部内容。出于这个目的，我们修改源 FruityViceService，添加 org.eclipse.microprofile.faulttolerance.Fallback，使用 MicroProfile 的 Fallback 框架，这样当应用无法访问时，会返回空（return FruityVice.EMPTY_FRUIT;），如下所示：
+package com.example;
+
+import java.util.List;
+
+import javax.ws.rs.GET;
+import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
+
+import org.eclipse.microprofile.faulttolerance.ExecutionContext;
+import org.eclipse.microprofile.faulttolerance.Fallback;
+import org.eclipse.microprofile.faulttolerance.FallbackHandler;
+import org.eclipse.microprofile.faulttolerance.Retry;
+import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
+
+@Path("/api")
+@RegisterRestClient
+public interface FruityViceService {
+
+    @GET
+    @Path("/fruit/all")
+    @Produces(MediaType.APPLICATION_JSON)
+    public List<FruityVice> getAllFruits();
+
+
+
+    @GET
+    @Path("/fruit/{name}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Retry(maxRetries = 3, delay = 2000)
+    @Fallback(value = FruityViceRecovery.class)
+    public FruityVice getFruitByName(@PathParam("name") String name);
+
+    public static class FruityViceRecovery implements FallbackHandler<FruityVice> {
+
+    @Override
+    public FruityVice handle(ExecutionContext context) {
+        return FruityVice.EMPTY_FRUIT;
+}
+
+}
+}
